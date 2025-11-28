@@ -1,19 +1,44 @@
 /**
- * DOORLOCK - NimBLE Server with Secure Read/Write
+ * DOORLOCK - NimBLE Server with Secure Read/Write and Rolling Code
  *
- * Enforces bonding, MITM protection, and encrypted read/write
+ * Security Features:
+ * - BLE bonding, MITM protection, and encrypted read/write
+ * - Rolling code mechanism to prevent replay attacks
+ *
+ * Rolling Code Protocol:
+ * - Command format: [1 byte command][4 bytes counter (little-endian)]
+ * - Counter must increment with each command
+ * - Counter is persisted in flash memory across reboots
+ * - Commands with old/replayed counters are rejected
+ * - Accepts counters within a window (default: 100) to handle out-of-order packets
+ *
+ * Client Implementation Example:
+ *   uint32_t counter = <get_from_storage>();
+ *   counter++;
+ *   uint8_t cmd[5] = {0x01, counter & 0xFF, (counter >> 8) & 0xFF,
+ *                     (counter >> 16) & 0xFF, (counter >> 24) & 0xFF};
+ *   characteristic.writeValue(cmd, 5);
+ *   <save_counter_to_storage>(counter);
  */
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <Preferences.h>
 
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define DEVICE_NAME         "DOORLOCK"
 #define LED_PIN             27
 
+// Rolling code configuration
+#define COUNTER_WINDOW      100  // Accept counters within this window ahead of expected
+#define COUNTER_NAMESPACE   "doorlock"
+#define COUNTER_KEY         "counter"
+
 static NimBLEServer* pServer = nullptr;
 static NimBLECharacteristic* pDoorChr = nullptr;
+static Preferences preferences;
+static uint32_t expectedCounter = 0;
 
 /** ---------------------------
  *  Server callbacks
@@ -57,6 +82,33 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 } serverCallbacks;
 
 /** ---------------------------
+ *  Rolling Code Functions
+ *  --------------------------- */
+bool validateAndUpdateCounter(uint32_t receivedCounter) {
+    if (receivedCounter <= expectedCounter) {
+        Serial.printf(">>> REPLAY ATTACK DETECTED: received %u, expected > %u <<<\n",
+                     receivedCounter, expectedCounter);
+        return false;
+    }
+
+    // Check if counter is within acceptable window (prevents desync)
+    if (receivedCounter > expectedCounter + COUNTER_WINDOW) {
+        Serial.printf(">>> COUNTER OUT OF WINDOW: received %u, expected %u-%u <<<\n",
+                     receivedCounter, expectedCounter + 1, expectedCounter + COUNTER_WINDOW);
+        return false;
+    }
+
+    // Valid counter - update expected and persist
+    expectedCounter = receivedCounter;
+    preferences.begin(COUNTER_NAMESPACE, false);
+    preferences.putUInt(COUNTER_KEY, expectedCounter);
+    preferences.end();
+
+    Serial.printf(">>> Counter validated: %u <<<\n", receivedCounter);
+    return true;
+}
+
+/** ---------------------------
  *  Characteristic callbacks
  *  --------------------------- */
 class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
@@ -83,9 +135,27 @@ class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
         for (size_t i = 0; i < val.length(); ++i) Serial.printf("%02X ", (uint8_t)val[i]);
         Serial.println();
 
-        if (val.length() == 0) return;
+        // Command format: [1 byte cmd][4 bytes counter (little-endian)]
+        if (val.length() != 5) {
+            Serial.printf(">>> INVALID LENGTH: expected 5 bytes, got %d <<<\n", (int)val.length());
+            return;
+        }
 
         uint8_t cmd = (uint8_t)val[0];
+
+        // Extract counter (little-endian)
+        uint32_t receivedCounter = ((uint32_t)(uint8_t)val[1])       |
+                                   ((uint32_t)(uint8_t)val[2] << 8)  |
+                                   ((uint32_t)(uint8_t)val[3] << 16) |
+                                   ((uint32_t)(uint8_t)val[4] << 24);
+
+        // Validate rolling code
+        if (!validateAndUpdateCounter(receivedCounter)) {
+            Serial.println(">>> COMMAND REJECTED: Invalid counter <<<");
+            return;
+        }
+
+        // Execute command if counter is valid
         if (cmd == 0x01) {
             digitalWrite(LED_PIN, HIGH);
             Serial.println(">>> LED turned ON <<<");
@@ -147,6 +217,12 @@ void setup() {
 
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
+
+    // Initialize rolling code counter from persistent storage
+    preferences.begin(COUNTER_NAMESPACE, false);
+    expectedCounter = preferences.getUInt(COUNTER_KEY, 0);
+    preferences.end();
+    Serial.printf("Rolling code initialized: expectedCounter = %u\n", expectedCounter);
 
     NimBLEDevice::init(DEVICE_NAME);
 
