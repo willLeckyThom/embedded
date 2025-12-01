@@ -1,29 +1,32 @@
 /**
- * DOORLOCK - NimBLE Server with Secure Read/Write and Rolling Code
+ * DOORLOCK - NimBLE Server with HMAC-Authenticated Rolling Code
  *
  * Security Features:
  * - BLE bonding, MITM protection, and encrypted read/write
  * - Rolling code mechanism to prevent replay attacks
+ * - HMAC-SHA256 authentication with shared secret key
  *
  * Rolling Code Protocol:
- * - Command format: [1 byte command][4 bytes counter (little-endian)]
- * - Counter must increment with each command
+ * - Message format: [4 bytes counter (little-endian)][32 bytes HMAC-SHA256]
+ * - Total size: 36 bytes
+ * - Counter must increment with each request
  * - Counter is persisted in flash memory across reboots
- * - Commands with old/replayed counters are rejected
+ * - Requests with old/replayed counters are rejected
  * - Accepts counters within a window (default: 100) to handle out-of-order packets
+ * - HMAC is computed as: HMAC-SHA256(shared_secret, counter_bytes)
  *
  * Client Implementation Example:
- *   uint32_t counter = <get_from_storage>();
  *   counter++;
- *   uint8_t cmd[5] = {0x01, counter & 0xFF, (counter >> 8) & 0xFF,
- *                     (counter >> 16) & 0xFF, (counter >> 24) & 0xFF};
- *   characteristic.writeValue(cmd, 5);
- *   <save_counter_to_storage>(counter);
+ *   counter_bytes = counter.to_bytes(4, 'little')
+ *   hmac_value = hmac.new(shared_secret, counter_bytes, hashlib.sha256).digest()
+ *   message = counter_bytes + hmac_value  # 36 bytes total
+ *   characteristic.write(message)
  */
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+#include <mbedtls/md.h>  // For HMAC-SHA256
 
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
@@ -34,6 +37,18 @@
 #define COUNTER_WINDOW      100  // Accept counters within this window ahead of expected
 #define COUNTER_NAMESPACE   "doorlock"
 #define COUNTER_KEY         "counter"
+
+// HMAC configuration
+#define HMAC_SIZE           32   // SHA-256 produces 32-byte output
+#define MESSAGE_SIZE        36   // 4 bytes counter + 32 bytes HMAC
+
+// Shared Secret (hardcoded for simplicity)
+const uint8_t SHARED_SECRET[32] = {
+    0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
+    0xab, 0xf7, 0x97, 0x75, 0x46, 0xcf, 0x34, 0xe5,
+    0x89, 0x32, 0x4b, 0x6c, 0x12, 0x93, 0x5d, 0x8f,
+    0xa9, 0x78, 0xbc, 0x3e, 0x6f, 0x21, 0x45, 0xd1
+};
 
 static NimBLEServer* pServer = nullptr;
 static NimBLECharacteristic* pDoorChr = nullptr;
@@ -82,8 +97,54 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 } serverCallbacks;
 
 /** ---------------------------
- *  Rolling Code Functions
+ *  HMAC and Rolling Code Functions
  *  --------------------------- */
+bool computeHMAC(const uint8_t* data, size_t dataLen, uint8_t* output) {
+    mbedtls_md_context_t ctx;
+    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
+
+    mbedtls_md_init(&ctx);
+
+    // Setup HMAC context
+    if (mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 1) != 0) {
+        Serial.println(">>> HMAC setup failed <<<");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+
+    // Set HMAC key
+    if (mbedtls_md_hmac_starts(&ctx, SHARED_SECRET, 32) != 0) {
+        Serial.println(">>> HMAC key setup failed <<<");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+
+    // Update HMAC with data
+    if (mbedtls_md_hmac_update(&ctx, data, dataLen) != 0) {
+        Serial.println(">>> HMAC update failed <<<");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+
+    // Finalize HMAC
+    if (mbedtls_md_hmac_finish(&ctx, output) != 0) {
+        Serial.println(">>> HMAC finalize failed <<<");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+
+    mbedtls_md_free(&ctx);
+    return true;
+}
+
+bool verifyHMAC(const uint8_t* hmac1, const uint8_t* hmac2) {
+    uint8_t result = 0;
+    for (int i = 0; i < HMAC_SIZE; i++) {
+        result |= hmac1[i] ^ hmac2[i];
+    }
+    return result == 0;
+}
+
 bool validateAndUpdateCounter(uint32_t receivedCounter) {
     if (receivedCounter <= expectedCounter) {
         Serial.printf(">>> REPLAY ATTACK DETECTED: received %u, expected > %u <<<\n",
@@ -135,42 +196,69 @@ class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
         for (size_t i = 0; i < val.length(); ++i) Serial.printf("%02X ", (uint8_t)val[i]);
         Serial.println();
 
-        // Command format: [1 byte cmd][4 bytes counter (little-endian)]
-        if (val.length() != 5) {
-            Serial.printf(">>> INVALID LENGTH: expected 5 bytes, got %d <<<\n", (int)val.length());
+        // Message format: [4 bytes counter (little-endian)][32 bytes HMAC-SHA256]
+        if (val.length() != MESSAGE_SIZE) {
+            Serial.printf(">>> INVALID LENGTH: expected %d bytes, got %d <<<\n", MESSAGE_SIZE, (int)val.length());
             return;
         }
 
-        uint8_t cmd = (uint8_t)val[0];
+        // Extract counter (little-endian) - first 4 bytes
+        uint8_t counterBytes[4];
+        counterBytes[0] = (uint8_t)val[0];
+        counterBytes[1] = (uint8_t)val[1];
+        counterBytes[2] = (uint8_t)val[2];
+        counterBytes[3] = (uint8_t)val[3];
 
-        // Extract counter (little-endian)
-        uint32_t receivedCounter = ((uint32_t)(uint8_t)val[1])       |
-                                   ((uint32_t)(uint8_t)val[2] << 8)  |
-                                   ((uint32_t)(uint8_t)val[3] << 16) |
-                                   ((uint32_t)(uint8_t)val[4] << 24);
+        uint32_t receivedCounter = ((uint32_t)counterBytes[0])       |
+                                   ((uint32_t)counterBytes[1] << 8)  |
+                                   ((uint32_t)counterBytes[2] << 16) |
+                                   ((uint32_t)counterBytes[3] << 24);
 
-        // Validate rolling code
+        // Extract received HMAC - last 32 bytes
+        uint8_t receivedHMAC[HMAC_SIZE];
+        for (int i = 0; i < HMAC_SIZE; i++) {
+            receivedHMAC[i] = (uint8_t)val[4 + i];
+        }
+
+        // Compute expected HMAC on the counter bytes
+        uint8_t computedHMAC[HMAC_SIZE];
+        if (!computeHMAC(counterBytes, 4, computedHMAC)) {
+            Serial.println(">>> HMAC COMPUTATION FAILED <<<");
+            return;
+        }
+
+        // Verify HMAC (constant-time comparison to prevent timing attacks)
+        if (!verifyHMAC(receivedHMAC, computedHMAC)) {
+            Serial.println(">>> AUTHENTICATION FAILED: Invalid HMAC <<<");
+            Serial.print("Expected HMAC: ");
+            for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", computedHMAC[i]);
+            Serial.println();
+            Serial.print("Received HMAC: ");
+            for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", receivedHMAC[i]);
+            Serial.println();
+            return;
+        }
+
+        Serial.println(">>> HMAC VERIFIED: Authentic message <<<");
+
+        // Validate rolling code counter
         if (!validateAndUpdateCounter(receivedCounter)) {
-            Serial.println(">>> COMMAND REJECTED: Invalid counter <<<");
+            Serial.println(">>> REQUEST REJECTED: Invalid counter <<<");
             return;
         }
 
-        // Execute command if counter is valid
-        if (cmd == 0x01) {
-            digitalWrite(LED_PIN, HIGH);
-            Serial.println(">>> LED turned ON <<<");
-            pCharacteristic->setValue("ON");
-            pCharacteristic->notify(true);
-            delay(1000);
-            digitalWrite(LED_PIN, LOW);
-        } else if (cmd == 0x00) {
-            digitalWrite(LED_PIN, LOW);
-            Serial.println(">>> LED turned OFF <<<");
-            pCharacteristic->setValue("OFF");
-            pCharacteristic->notify(true);
-        } else {
-            Serial.printf(">>> UNKNOWN command: 0x%02X <<<\n", cmd);
-        }
+        // All checks passed - open the door!
+        Serial.println(">>> OPENING DOOR <<<");
+        digitalWrite(LED_PIN, HIGH);
+        pCharacteristic->setValue("DOOR_OPENED");
+        pCharacteristic->notify(true);
+
+        delay(3000);  // Keep door open for 3 seconds
+
+        digitalWrite(LED_PIN, LOW);
+        Serial.println(">>> DOOR CLOSED <<<");
+        pCharacteristic->setValue("DOOR_CLOSED");
+        pCharacteristic->notify(true);
     }
 
     void onStatus(NimBLECharacteristic* pCharacteristic, int code) override {
