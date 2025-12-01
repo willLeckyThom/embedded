@@ -100,6 +100,10 @@ class DoorLockClient:
         self.counter += 1
         self.save_counter()
 
+    def decrement_counter(self):
+        self.counter -= 1
+        self.save_counter()
+
     def generate_message(self):
         """
         Generate authenticated message: [counter][HMAC]
@@ -175,7 +179,7 @@ class DoorLockClient:
         except Exception as e:
             print(f"[ERROR] Failed to communicate with device: {e}")
             print("[INFO] Rolling back counter due to failure...")
-            self.counter -= 1
+            self.decrement_counter()
             self.save_counter()
             return False
 

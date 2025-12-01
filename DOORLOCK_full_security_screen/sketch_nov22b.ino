@@ -224,6 +224,8 @@ class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
         uint8_t computedHMAC[HMAC_SIZE];
         if (!computeHMAC(counterBytes, 4, computedHMAC)) {
             Serial.println(">>> HMAC COMPUTATION FAILED <<<");
+            pCharacteristic->setValue("HMAC ERROR");
+            pCharacteristic->notify(true);
             return;
         }
 
@@ -236,6 +238,8 @@ class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
             Serial.print("Received HMAC: ");
             for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", receivedHMAC[i]);
             Serial.println();
+            pCharacteristic->setValue("INVALID HMAC");
+            pCharacteristic->notify(true);
             return;
         }
 
@@ -244,6 +248,8 @@ class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
         // Validate rolling code counter
         if (!validateAndUpdateCounter(receivedCounter)) {
             Serial.println(">>> REQUEST REJECTED: Invalid counter <<<");
+            pCharacteristic->setValue("INVALID COUNTER");
+            pCharacteristic->notify(true);
             return;
         }
 
