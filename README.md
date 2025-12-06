@@ -9,6 +9,9 @@ BLE-controlled door lock built on ESP32 (NimBLE stack) for ELEC-H550 Embedded Sy
 - `DOORLOCK_full_security_screen/` — bonded + MITM-protected server that enforces an HMAC-SHA256 rolling code; includes a Python client.
 - `sketch_oct28a/` — early exploration sketch kept for reference.
 - `sniffing_*.pcapng` — BLE traffic captures (no security, no security with PIN prompt, and secured).
+- `ble_send_hello.sh` — Allows to connect to the ESP32 using a laptop.
+- `ble_crack_hello.sh` — Allows to crack the pin if a static pin and no ban system is in place.
+- `send_python_input.py` — Allows to send data captured in wireshark, emulating a replay attack.
 
 ## Firmware Variants
 - `DOORLOCK_no_security/sketch_nov22a.ino`: no bonding/mitm/encryption; characteristic supports read/write/notify. Command `0x01` opens the door (LED on) and then the latch closes after 3 seconds. Useful to demonstrate trivial replay/spoofing.
