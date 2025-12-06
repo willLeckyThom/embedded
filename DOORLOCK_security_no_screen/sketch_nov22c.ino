@@ -27,22 +27,33 @@ struct BanEntry {
 static std::vector<BanEntry> banned;
 static std::map<std::string, int> failCount;
 
+/* Cleanup expired bans */
+void cleanupExpiredBans() {
+    uint32_t now = millis();
+    banned.erase(
+        std::remove_if(banned.begin(), banned.end(),
+            [&](BanEntry &b){ return now > b.until; }),
+        banned.end()
+    );
+}
+
 /* Check if MAC is banned */
-bool isBanned(NimBLEAddress mac) {
+bool isBanned(const NimBLEAddress &mac) {
+    cleanupExpiredBans();
     uint32_t now = millis();
     for (auto &b : banned) {
-        if (b.mac.equals(mac)) {
-            if (now < b.until) return true;
+        if (b.mac == mac && now < b.until) {
+            return true;
         }
     }
     return false;
 }
 
-/* Add to ban */
-void banMAC(NimBLEAddress mac) {
+/* Add or extend ban */
+void banMAC(const NimBLEAddress &mac) {
     uint32_t until = millis() + BAN_DURATION;
     for (auto &b : banned) {
-        if (b.mac.equals(mac)) {
+        if (b.mac == mac) {
             b.until = until;
             return;
         }
@@ -57,44 +68,46 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
     void onConnect(NimBLEServer* s, NimBLEConnInfo& info) override {
         NimBLEAddress mac = info.getAddress();
+
         if (isBanned(mac)) {
-            Serial.printf("BANNED device %s attempted to connect!\n", mac.toString().c_str());
+            Serial.printf("BANNED device %s attempted to connect!\n",
+                          mac.toString().c_str());
             s->disconnect(info.getConnHandle());
             return;
         }
+
         Serial.printf("Client connected: %s\n", mac.toString().c_str());
     }
 
-    void onDisconnect(NimBLEServer* s, NimBLEConnInfo& info, int reason) override {
-        Serial.printf("Disconnected %s (reason %d). Restart advertising.\n",
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
+        Serial.printf("Disconnected %s (reason %d). Restarting advertising.\n",
                       info.getAddress().toString().c_str(), reason);
         NimBLEDevice::startAdvertising();
     }
 
-    // Correct callback supported by NimBLE-Arduino
     uint32_t onPassKeyDisplay() override {
-        Serial.printf("Static passkey shown: %u\n", STATIC_PASSKEY);
+        Serial.printf("Static passkey displayed: %u\n", STATIC_PASSKEY);
         return STATIC_PASSKEY;
     }
 
     void onAuthenticationComplete(NimBLEConnInfo& info) override {
         std::string mac = info.getAddress().toString();
 
-        if (!info.isAuthenticated() || !info.isEncrypted()) {
+        if (!info.isEncrypted()) {
             Serial.printf("Authentication FAILED for %s\n", mac.c_str());
-
             failCount[mac]++;
-            Serial.printf("→ Fail count = %d\n", failCount[mac]);
+
+            Serial.printf("→ Fail count: %d\n", failCount[mac]);
 
             if (failCount[mac] >= MAX_FAILS) {
-                Serial.printf("!! BANNING %s for 5 minutes !!\n", mac.c_str());
+                Serial.printf("!! BANNING %s\n", mac.c_str());
                 banMAC(info.getAddress());
             }
             return;
         }
 
-        Serial.printf("Secure authenticated & encrypted connection with %s\n", mac.c_str());
-        failCount[mac] = 0; // reset counter
+        Serial.printf("Secure authenticated connection with %s\n", mac.c_str());
+        failCount[mac] = 0; // reset after success
     }
 } serverCB;
 
@@ -106,7 +119,7 @@ class DoorCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo& info) override {
 
         if (!info.isEncrypted()) {
-            Serial.println("Write blocked: connection NOT encrypted");
+            Serial.println("Write blocked: NOT encrypted");
             return;
         }
 
@@ -121,10 +134,8 @@ class DoorCallbacks : public NimBLECharacteristicCallbacks {
             digitalWrite(LED_PIN, HIGH);
             chr->setValue("ON");
             chr->notify();
-        } else if (cmd == 0x00) {
+            delay(1000);          // FIXED: replaced sleep(1) a
             digitalWrite(LED_PIN, LOW);
-            chr->setValue("OFF");
-            chr->notify();
         }
     }
 } doorCB;
@@ -142,8 +153,8 @@ void setup() {
 
     NimBLEDevice::init(DEVICE_NAME);
 
-    /* Security Configuration */
-    NimBLEDevice::setSecurityAuth(true, true, true);   // bonding, MITM, SC
+    /* Security settings */
+    NimBLEDevice::setSecurityAuth(true, true, true);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
     NimBLEDevice::setSecurityPasskey(STATIC_PASSKEY);
 
@@ -179,5 +190,6 @@ void setup() {
 }
 
 void loop() {
+    cleanupExpiredBans();
     delay(1000);
 }
