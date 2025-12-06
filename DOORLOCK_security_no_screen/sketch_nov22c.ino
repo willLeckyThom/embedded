@@ -13,7 +13,7 @@
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define DEVICE_NAME         "DOORLOCK"
-#define LED_PIN             27
+#define LOCK_PIN             27
 #define STATIC_PASSKEY      123456
 #define MAX_FAILS           3
 #define BAN_DURATION        300000UL  // 5 minutes
@@ -131,11 +131,11 @@ class DoorCallbacks : public NimBLECharacteristicCallbacks {
                       cmd, info.getAddress().toString().c_str());
 
         if (cmd == 0x01) {
-            digitalWrite(LED_PIN, HIGH);
+            digitalWrite(LOCK_PIN, HIGH);
             chr->setValue("ON");
             chr->notify();
             delay(1000);          // FIXED: replaced sleep(1) a
-            digitalWrite(LED_PIN, LOW);
+            digitalWrite(LOCK_PIN, LOW);
         }
     }
 } doorCB;
@@ -148,8 +148,8 @@ void setup() {
     Serial.begin(115200);
     delay(200);
 
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
+    pinMode(LOCK_PIN, OUTPUT);
+    digitalWrite(LOCK_PIN, LOW);
 
     NimBLEDevice::init(DEVICE_NAME);
 
