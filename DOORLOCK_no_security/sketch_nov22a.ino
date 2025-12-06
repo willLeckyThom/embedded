@@ -13,7 +13,7 @@
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define DEVICE_NAME         "DOORLOCK"
-#define LED_PIN             27
+#define LOCK_PIN             27
 
 static NimBLEServer* pServer = nullptr;
 static NimBLECharacteristic* pDoorChr = nullptr;
@@ -90,19 +90,13 @@ class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
         }
         uint8_t cmd = (uint8_t)val[0];
         if (cmd == 0x01) {
-            digitalWrite(LED_PIN, HIGH);
+            digitalWrite(LOCK_PIN, HIGH);
             Serial.println(">>> LED turned ON <<<");
             pCharacteristic->setValue("ON");
             pCharacteristic->notify(true); // indicate/notify to all subscribed peers
             sleep(1);
-            digitalWrite(LED_PIN, LOW);
-
-        } else if (cmd == 0x00) {
-            digitalWrite(LED_PIN, LOW);
-            Serial.println(">>> LED turned OFF <<<");
-            pCharacteristic->setValue("OFF");
-            pCharacteristic->notify(true);
-        } else {
+            digitalWrite(LOCK_PIN, LOW);
+        }else{
             Serial.printf(">>> UNKNOWN command: 0x%02X <<<\n", cmd);
         }
     }
@@ -152,8 +146,8 @@ void setup() {
     Serial.println("\nStarting DOORLOCK NimBLE Server");
 
     // write to a light    
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
+    pinMode(LOCK_PIN, OUTPUT);
+    digitalWrite(LOCK_PIN, LOW);
 
     // Initialize NimBLE and set device name
     NimBLEDevice::init(DEVICE_NAME);
