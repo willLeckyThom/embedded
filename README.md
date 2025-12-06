@@ -11,7 +11,7 @@ BLE-controlled door lock built on ESP32 (NimBLE stack) for ELEC-H550 Embedded Sy
 - `sniffing_*.pcapng` — BLE traffic captures (no security, no security with PIN prompt, and secured).
 
 ## Firmware Variants
-- `DOORLOCK_no_security/sketch_nov22a.ino`: no bonding/mitm/encryption; characteristic supports read/write/notify. Command `0x01` opens the door (LED on), `0x00` closes. Useful to demonstrate trivial replay/spoofing.
+- `DOORLOCK_no_security/sketch_nov22a.ino`: no bonding/mitm/encryption; characteristic supports read/write/notify. Command `0x01` opens the door (LED on) and then the latch closes after 3 seconds. Useful to demonstrate trivial replay/spoofing.
 - `DOORLOCK_security_no_screen/sketch_nov22c.ino`: static passkey `123456`, bonding + MITM, encryption required on read/write. Tracks failed authentications per MAC; after 3 failures the MAC is banned for 5 minutes. Simple on/off command handler once encrypted.
 - `DOORLOCK_full_security_screen/sketch_nov22b.ino`: full stack security plus rolling code:
   - Bonding, MITM, encrypted read/write; numeric comparison pairing flow.
