@@ -42,7 +42,7 @@
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define DEVICE_NAME         "DOORLOCK"
-#define LED_PIN             27
+#define LOCK_PIN             27
 
 // Rolling code configuration
 #define COUNTER_WINDOW      100  // Accept counters within this window ahead of expected
@@ -349,7 +349,7 @@ class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 
         // All checks passed - open the door!
         Serial.println(">>> OPENING DOOR <<<");
-        digitalWrite(LED_PIN, HIGH);
+        digitalWrite(LOCK_PIN, HIGH);
         pCharacteristic->setValue("DOOR_OPENED");
         pCharacteristic->notify(true);
 
@@ -358,7 +358,7 @@ class DoorCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 
         delay(3000);  // Keep door open for 3 seconds
 
-        digitalWrite(LED_PIN, LOW);
+        digitalWrite(LOCK_PIN, LOW);
         Serial.println(">>> DOOR CLOSED <<<");
         pCharacteristic->setValue("DOOR_CLOSED");
         pCharacteristic->notify(true);
@@ -409,8 +409,8 @@ void setup() {
     delay(500);
     Serial.println("\nStarting DOORLOCK NimBLE Server (HMAC Rolling Code + OLED)");
 
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
+    pinMode(LOCK_PIN, OUTPUT);
+    digitalWrite(LOCK_PIN, LOW);
 
     // Initialize OLED
     Wire.begin(); // uses default 21/22 unless changed
